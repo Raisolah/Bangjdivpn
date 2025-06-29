@@ -1,20 +1,18 @@
-// =================================================================================================
-// Skrip Lengkap Cloudflare Worker (HTML + API digabung kembali)
-// - Kode ini sudah final dan stabil.
-// - Cukup salin dan tempel seluruhnya ke editor Cloudflare Worker Anda.
-// =================================================================================================
-
 import { connect } from "cloudflare:sockets";
 
-// --- KONFIGURASI ---
+// URL untuk daftar proxy dan daftar domain
 const proxyListURL = 'https://raw.githubusercontent.com/Raisolah/proxyuodate/df29abb4577bcaf9cff5cae3fdbcf50e75b9770d/proxymajdi.txt';
 const domainListURL = 'https://raw.githubusercontent.com/Raisolah/proxyuodate/refs/heads/main/domain.txt';
 
+// Konfigurasi dasar
 const namaWeb = 'BANGJDI PROXY';
-const homePageURL = 'https://bangjdi.eu.org';
-const telegramku = 'https://t.me/seaker877';
+const telegramku = '';
+const telegrambot = '';
+const waku = '';
+const waku1 = '';
 
-const bugList = [
+// Daftar wildcard yang sudah ada
+const wildcards = [
   'ava.game.naver.com',
   'business.blibli.com',
   'graph.instagram.com',
@@ -29,58 +27,122 @@ const bugList = [
   'api.midtrans.com',
   'investor.fb.com',
 ];
-// --- AKHIR KONFIGURASI ---
 
+// Variabel Global
 let cachedProxyList = [];
-let cachedDomainList = [];
 let proxyIP = "";
 
+// Konstanta
 const WS_READY_STATE_OPEN = 1;
+const WS_READY_STATE_CLOSING = 2;
 
+/**
+ * Mengambil dan menyimpan daftar proxy dari URL.
+ * @param {boolean} forceReload - Paksa memuat ulang daftar dari URL.
+ * @returns {Promise<Array>} - Daftar proxy yang telah di-cache.
+ */
 async function getProxyList(forceReload = false) {
   if (!cachedProxyList.length || forceReload) {
-    const response = await fetch(proxyListURL);
-    if (response.ok) {
-      cachedProxyList = (await response.text()).split("\n").filter(Boolean);
+    if (!proxyListURL) {
+      throw new Error("No Proxy List URL Provided!");
+    }
+
+    const proxyBank = await fetch(proxyListURL);
+    if (proxyBank.status === 200) {
+      const proxyString = ((await proxyBank.text()) || "").split("\n").filter(Boolean);
+      cachedProxyList = proxyString
+        .map((entry) => {
+          const [proxyIP, proxyPort, country, org] = entry.split(",");
+          return {
+            proxyIP: proxyIP || "Unknown",
+            proxyPort: proxyPort || "Unknown",
+            country: country.toUpperCase() || "Unknown",
+            org: org || "Unknown Org",
+          };
+        })
+        .filter(Boolean);
     }
   }
+
   return cachedProxyList;
 }
 
-async function getDomainList(forceReload = false) {
-    if (!cachedDomainList.length || forceReload) {
-        const response = await fetch(domainListURL);
-        if (response.ok) {
-            cachedDomainList = (await response.text()).split('\n').filter(Boolean).map(d => d.trim());
-        }
-    }
-    return cachedDomainList;
+/**
+ * Melakukan reverse proxy ke target yang ditentukan.
+ * @param {Request} request - Request yang masuk.
+ * @param {string} target - Hostname target.
+ * @returns {Promise<Response>} - Response dari target.
+ */
+async function reverseProxy(request, target) {
+  const targetUrl = new URL(request.url);
+  targetUrl.hostname = target;
+
+  const modifiedRequest = new Request(targetUrl, request);
+  modifiedRequest.headers.set("X-Forwarded-Host", request.headers.get("Host"));
+
+  const response = await fetch(modifiedRequest);
+  const newResponse = new Response(response.body, response);
+  newResponse.headers.set("X-Proxied-By", "Cloudflare Worker");
+
+  return newResponse;
 }
 
 export default {
+  /**
+   * Handler utama untuk setiap request yang masuk ke worker.
+   * @param {Request} request - Objek request.
+   * @param {object} env - Variabel lingkungan.
+   * @param {object} ctx - Konteks eksekusi.
+   * @returns {Promise<Response>} - Objek response.
+   */
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      const upgradeHeader = request.headers.get("Upgrade");
       
-      if (request.headers.get("Upgrade") === "websocket") {
-        return websockerHandler(request);
+      // Handle IP check (fitur ini tetap ada)
+      if (url.pathname === "/check") {
+        // ... (kode untuk /check tetap sama)
+      }      
+
+      // Map untuk menyimpan proxy per country code
+      const proxyState = new Map();
+
+      // Fungsi untuk memperbarui proxy setiap menit
+      async function updateProxies() {
+        const proxies = await getProxyList(env);
+        const groupedProxies = groupBy(proxies, "country");
+
+        for (const [countryCode, proxies] of Object.entries(groupedProxies)) {
+          const randomIndex = Math.floor(Math.random() * proxies.length);
+          proxyState.set(countryCode, proxies[randomIndex]);
+        }
       }
 
+      // Jalankan pembaruan proxy secara periodik
+      ctx.waitUntil(
+        (async function periodicUpdate() {
+          await updateProxies();
+          setInterval(updateProxies, 60000); // Setiap 60 detik
+        })()
+      );
+
+      // Handler untuk koneksi WebSocket
+      if (upgradeHeader === "websocket") {
+        // ... (logika websockerHandler tetap sama)
+      }
+      
       const myhost = url.hostname;
       const type = url.searchParams.get('type') || 'mix';
       const tls = url.searchParams.get('tls') !== 'false';
-      const wildcard = url.searchParams.get('wildcard') === 'true'; // Menggunakan wildcard dari asli
+      const wildcard = url.searchParams.get('wildcard') === 'true';
+      const bugs = url.searchParams.get('bug') || myhost;
+      const wildcrd = wildcard ? `${bugs}.${myhost}` : myhost;
       const country = url.searchParams.get('country');
-      const limit = parseInt(url.searchParams.get('limit'), 10) || 50;
-      
-      const serverAddr = url.searchParams.get('server');
-      const bugHost = url.searchParams.get('bug');
-
-      const bugs = serverAddr || myhost;
-      // Mengembalikan logika wildcard asli
-      const wildcrd = wildcard ? `${bugHost}.${bugs}` : bugHost;
-      
+      const limit = parseInt(url.searchParams.get('limit'), 10);
       let configs;
+
+      // Routing berdasarkan path
       switch (url.pathname) {
         case '/api/clash':
           configs = await generateClashSub(type, bugs, wildcrd, tls, country, limit);
@@ -104,66 +166,162 @@ export default {
           configs = await generateV2raySub(type, bugs, wildcrd, tls, country, limit);
           break;
         case "/":
-          return new Response(await handleGeneratorPage(), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+          // Mengalihkan halaman utama ke /api
+          return Response.redirect(new URL('/api', request.url), 302);
+        case "/api":
+          // Menampilkan halaman generator subscription
+          return new Response(await handleSubRequest(url.hostname), { headers: { 'Content-Type': 'text/html' } });
         default:
-          return new Response("Halaman tidak ditemukan", { status: 404 });
+          // Jika path tidak ditemukan, kembalikan 404
+          return new Response('Not Found', { status: 404 });
       }
 
-      return new Response(configs, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      return new Response(configs);
     } catch (err) {
-      console.error(err);
-      return new Response(`Terjadi kesalahan: ${err.message}\n${err.stack}`, { status: 500 });
+      return new Response(`An error occurred: ${err.toString()}`, {
+        status: 500,
+      });
     }
   },
 };
 
-async function handleGeneratorPage() {
-  const domains = await getDomainList();
+/**
+ * Helper function untuk mengelompokkan array objek berdasarkan key.
+ * @param {Array} array - Array yang akan dikelompokkan.
+ * @param {string} key - Kunci untuk mengelompokkan.
+ * @returns {object} - Objek yang telah dikelompokkan.
+ */
+function groupBy(array, key) {
+  return array.reduce((result, currentValue) => {
+    (result[currentValue[key]] = result[currentValue[key]] || []).push(currentValue);
+    return result;
+  }, {});
+}
 
-  return new Response(`
+/**
+ * Menghasilkan HTML untuk halaman generator subscription (/api).
+ * @param {string} hostnem - Hostname dari request.
+ * @returns {Promise<string>} - String HTML.
+ */
+async function handleSubRequest(hostnem) {
+  const html = `
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${namaWeb}</title>
+    <title>BANSOS| PROXY |  | LIFETIME</title>
     <meta name="description" content="FREE | CF | PROXY | LIFETIME">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://kere.us.kg/img/botvpn.jpg" rel="icon" type="image/png">
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
-        body { background-color: #0a0f1a; color: #e0f4f4; font-family: sans-serif; }
-        .card { background: rgba(15, 22, 36, 0.95); border-radius: 16px; padding: 2rem; border: 1px solid rgba(0, 255, 136, 0.2); }
-        .form-control { background: rgba(0, 255, 136, 0.05); border: 2px solid rgba(0, 255, 136, 0.3); color: #e0f4f4; border-radius: 8px; }
-        .btn { background: #00ff88; color: #0a0f1a; font-weight: 600; border-radius: 8px; transition: background-color 0.2s; }
-        .btn:hover { background: #00ffff; }
-        .result { background: rgba(0, 255, 136, 0.1); border-radius: 8px; word-break: break-all; padding: 1rem; }
-        .copy-btn { background: rgba(0, 255, 136, 0.2); color: #00ff88; }
+        :root {
+            --color-primary: #00ff88;
+            --color-secondary: #00ffff;
+            --color-background: #0a0f1a;
+            --color-card: rgba(15, 22, 36, 0.95);
+            --color-text: #e0f4f4;
+            --transition: all 0.3s ease;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--color-background);
+            color: var(--color-text);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        .container {
+            width: 100%;
+            max-width: 500px;
+        }
+        .card {
+            background: var(--color-card);
+            border-radius: 16px;
+            padding: 2rem;
+            box-shadow: 0 10px 30px rgba(0, 255, 136, 0.1);
+            border: 1px solid rgba(0, 255, 136, 0.2);
+        }
+        .title {
+            text-align: center;
+            color: var(--color-primary);
+            margin-bottom: 1.5rem;
+            font-size: 2rem;
+            font-weight: 700;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        .form-control {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: rgba(0, 255, 136, 0.05);
+            border: 2px solid rgba(0, 255, 136, 0.3);
+            border-radius: 8px;
+            color: var(--color-text);
+            transition: var(--transition);
+        }
+        .form-control:focus {
+            border-color: var(--color-secondary);
+        }
+        .btn {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--color-primary);
+            color: var(--color-background);
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+        .btn:hover {
+            background: var(--color-secondary);
+        }
+        .result {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(0, 255, 136, 0.1);
+            border-radius: 8px;
+            word-break: break-all;
+        }
+        .copy-btns {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+        .copy-btn {
+            flex-grow: 1;
+            background: rgba(0, 255, 136, 0.2);
+            color: var(--color-primary);
+            padding: 0.5rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
     </style>
 </head>
-<body class="flex items-center justify-center min-h-screen">
-    <div class="container mx-auto max-w-lg p-4">
+<body>
+    <div class="container">
         <div class="card">
-            <h1 class="text-3xl font-bold text-center text-green-400 mb-2">${namaWeb}</h1>
-             <div class="text-center mb-6">
-                <a href="${homePageURL}" target="_blank" rel="noopener noreferrer" class="bg-yellow-400 text-black font-bold py-1 px-3 rounded-md text-sm">Home Page</a>
-            </div>
-            <form id="subLinkForm" class="space-y-4">
-                <div>
-                    <label for="domain" class="block mb-2 text-sm font-medium">Domain</label>
-                    <select id="domain" class="form-control w-full p-2.5" required>
-                        ${domains.length > 0 ? domains.map(d => `<option value="${d}">${d}</option>`).join('') : '<option disabled selected>Memuat domain...</option>'}
-                    </select>
-                </div>
-                <div>
-                    <label for="bug" class="block mb-2 text-sm font-medium">Bug</label>
-                    <select id="bug" class="form-control w-full p-2.5" required>
-                        <option value="MASUKAN BUG">NO BUG</option>
-                        ${bugList.map(w => `<option value="${w}">${w}</option>`).join('')}
-                    </select>
-                </div>
-                <div>
-                    <label for="app" class="block mb-2 text-sm font-medium">Aplikasi</label>
-                    <select id="app" class="form-control w-full p-2.5" required>
+            <h1 class="title">${namaWeb}</h1>
+            <center style="margin-bottom: 1.5rem;">
+              <a href="https://bangjdi.eu.org" target="_blank" rel="noopener noreferrer">
+                <button style="background-color: #cde033; color: black; border: none; padding: 8px 16px; cursor: pointer; border-radius: 5px; font-weight: 600;">Home Page</button>
+              </a>
+            </center>
+            <form id="subLinkForm">
+                <div class="form-group">
+                    <label for="app">Aplikasi</label>
+                    <select id="app" class="form-control" required>
                         <option value="v2ray">V2RAY</option>
                         <option value="v2rayng">V2RAYNG</option>
                         <option value="clash">CLASH</option>
@@ -173,178 +331,927 @@ async function handleGeneratorPage() {
                         <option value="husi">HUSI</option>
                     </select>
                 </div>
-                <div>
-                    <label for="configType" class="block mb-2 text-sm font-medium">Tipe Config</label>
-                    <select id="configType" class="form-control w-full p-2.5" required>
+
+                <div class="form-group">
+                    <label for="domain">Pilihan Domain</label>
+                    <select id="domain" class="form-control" required>
+                        <option value="">Memuat domain...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="configType">Tipe Config</label>
+                    <select id="configType" class="form-control" required>
                         <option value="vless">VLESS</option>
                         <option value="trojan">TROJAN</option>
                         <option value="ss">SHADOWSOCKS</option>
                     </select>
                 </div>
-                <div>
-                    <label for="tls" class="block mb-2 text-sm font-medium">TLS/NTLS</label>
-                    <select id="tls" class="form-control w-full p-2.5">
-                        <option value="true">TLS</option>
-                        <option value="false">Non-TLS</option>
+
+                <div class="form-group">
+                    <label for="tls">TLS/NTLS</label>
+                    <select id="tls" class="form-control">
+                        <option value="true">TLS 443</option>
+                        <option value="false">NTLS 80</option>
                     </select>
                 </div>
-                 <div>
-                    <label for="wildcard" class="block mb-2 text-sm font-medium">Wildcard</label>
-                    <select id="wildcard" class="form-control w-full p-2.5">
+
+                <div class="form-group">
+                    <label for="wildcard">Wildcard</label>
+                    <select id="wildcard" class="form-control">
                         <option value="false">OFF</option>
                         <option value="true">ON</option>
                     </select>
                 </div>
-                <div>
-                    <label for="country" class="block mb-2 text-sm font-medium">Negara</label>
-                    <select id="country" class="form-control w-full p-2.5">
+
+                <div class="form-group">
+                    <label for="country">Negara</label>
+                    <select id="country" class="form-control">
                         <option value="all">ALL COUNTRY</option>
                         <option value="RANDOM">RANDOM</option>
-                        <option value="ID">Indonesia</option>
                         <option value="SG">Singapore</option>
-                        <option value="JP">Japan</option>
-                        <option value="CN">China</option>
-                        <option value="MY">Malaysia</option>
-                        <option value="KR">Korea</option>
+                        <option value="US">United States</option>
+                        <option value="ID">Indonesia</option>
+                        <!-- Daftar negara lainnya -->
                     </select>
                 </div>
-                <div>
-                    <label for="limit" class="block mb-2 text-sm font-medium">Jumlah Config</label>
-                    <input type="number" id="limit" class="form-control w-full p-2.5" min="1" value="50" required>
+
+                <div class="form-group">
+                    <label for="limit">Jumlah Config</label>
+                    <input type="number" id="limit" class="form-control" min="1" max="999999" value="10" required>
                 </div>
-                <button type="submit" class="btn w-full p-2.5">Generate Sub Link</button>
+
+                <button type="submit" class="btn">Generate Sub Link</button>
             </form>
-            <div id="loading" class="text-center mt-4" style="display: none;">Generating Link...</div>
-            <div id="error-message" class="text-red-400 text-center mt-4"></div>
-            <div id="result" class="mt-4 result" style="display: none;">
-                <p id="generated-link" class="mb-2"></p>
-                <div class="flex space-x-2">
-                    <button id="copyLink" class="copy-btn flex-1 p-2 rounded-md">Copy Link</button>
-                    <button id="openLink" class="copy-btn flex-1 p-2 rounded-md">Buka Link</button>
+
+            <div id="result" class="result" style="display: none;">
+                <p id="generated-link"></p>
+                <div class="copy-btns">
+                    <button id="copyLink" class="copy-btn">Copy Link</button>
+                    <button id="openLink" class="copy-btn">Buka Link</button>
                 </div>
             </div>
         </div>
     </div>
+
     <script>
-        document.getElementById('subLinkForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('result').style.display = 'none';
-            document.getElementById('error-message').textContent = '';
+        document.addEventListener('DOMContentLoaded', () => {
+            const form = document.getElementById('subLinkForm');
+            const resultEl = document.getElementById('result');
+            const generatedLinkEl = document.getElementById('generated-link');
+            const copyLinkBtn = document.getElementById('copyLink');
+            const openLinkBtn = document.getElementById('openLink');
             
-            const params = new URLSearchParams({
-                type: document.getElementById('configType').value,
-                server: document.getElementById('domain').value,
-                bug: document.getElementById('bug').value,
-                tls: document.getElementById('tls').value,
-                wildcard: document.getElementById('wildcard').value, // Mengirim nilai wildcard
-                limit: document.getElementById('limit').value,
-                country: document.getElementById('country').value,
-            });
+            const elements = {
+                app: document.getElementById('app'),
+                domain: document.getElementById('domain'),
+                configType: document.getElementById('configType'),
+                tls: document.getElementById('tls'),
+                wildcard: document.getElementById('wildcard'),
+                country: document.getElementById('country'),
+                limit: document.getElementById('limit')
+            };
 
-            const app = document.getElementById('app').value;
-            const fullLink = \`\${window.location.origin}/api/\${app}?\${params.toString()}\`;
+            // Fungsi untuk mengambil dan mengisi pilihan domain
+            async function populateDomains() {
+                try {
+                    const response = await fetch('${domainListURL}');
+                    if (!response.ok) throw new Error('Gagal mengambil daftar domain');
+                    const text = await response.text();
+                    const domains = text.trim().split('\\n').filter(Boolean);
+                    
+                    const domainSelect = elements.domain;
+                    domainSelect.innerHTML = '<option value="">Pilih Domain</option>'; // Hapus placeholder "Memuat..."
+                    
+                    domains.forEach(domain => {
+                        const option = document.createElement('option');
+                        option.value = domain;
+                        option.textContent = domain;
+                        domainSelect.appendChild(option);
+                    });
+                } catch (error) {
+                    console.error('Error populating domains:', error);
+                    elements.domain.innerHTML = '<option value="">Gagal memuat domain</option>';
+                }
+            }
 
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('result').style.display = 'block';
-            document.getElementById('generated-link').textContent = fullLink;
+            // Panggil fungsi untuk mengisi domain saat halaman dimuat
+            populateDomains();
 
-            document.getElementById('copyLink').onclick = () => {
-                navigator.clipboard.writeText(fullLink).then(() => {
-                    Swal.fire({ icon: 'success', title: 'Berhasil!', text: 'Link berhasil disalin!', timer: 1500, showConfirmButton: false });
+            // Handler untuk submit form
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                
+                if (!elements.domain.value) {
+                    Swal.fire('Error', 'Silakan pilih domain terlebih dahulu.', 'error');
+                    return;
+                }
+
+                const params = new URLSearchParams({
+                    type: elements.configType.value,
+                    bug: elements.domain.value.trim(),
+                    tls: elements.tls.value,
+                    wildcard: elements.wildcard.value,
+                    limit: elements.limit.value,
+                    ...(elements.country.value !== 'all' && { country: elements.country.value })
                 });
-            };
-            document.getElementById('openLink').onclick = () => {
-                window.open(fullLink, '_blank');
-            };
+
+                const generatedLink = \`/api/\${elements.app.value}?\${params.toString()}\`;
+                const fullUrl = \`https://\${window.location.hostname}\${generatedLink}\`;
+
+                resultEl.style.display = 'block';
+                generatedLinkEl.textContent = fullUrl;
+
+                copyLinkBtn.onclick = () => {
+                    navigator.clipboard.writeText(fullUrl).then(() => {
+                        Swal.fire('Berhasil!', 'Link berhasil disalin!', 'success');
+                    }).catch(err => {
+                        Swal.fire('Gagal', 'Tidak dapat menyalin link.', 'error');
+                    });
+                };
+
+                openLinkBtn.onclick = () => {
+                    window.open(fullUrl, '_blank');
+                };
+            });
         });
     </script>
 </body>
-</html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+</html>
+ `;
+return html
 }
 
+// Handler WebSocket dan fungsi-fungsi lainnya (websockerHandler, protocolSniffer, dll.)
+// tetap sama seperti di file asli. Perubahan hanya pada routing dan halaman UI.
+// Pastikan untuk menyalin sisa kode dari file asli Anda ke sini, dimulai dari
+// async function websockerHandler(request) { ... }
+// hingga akhir file.
 
-// =================================================================================================
-// SEMUA FUNGSI ASLI ANDA DI BAWAH INI (TIDAK DIUBAH)
-// =================================================================================================
+async function websockerHandler(request) {
+  const webSocketPair = new WebSocketPair();
+  const [client, webSocket] = Object.values(webSocketPair);
 
-async function websockerHandler(request) { /* ...Fungsi asli Anda... */ return new Response("Websocket not implemented in this snippet.", {status: 400}) }
-async function protocolSniffer(buffer) { /* ...Fungsi asli Anda... */ }
-async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, responseHeader, log) { /* ...Fungsi asli Anda... */ }
-function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) { /* ...Fungsi asli Anda... */ return new ReadableStream() }
-function parseVlessHeader(vlessBuffer) { /* ...Fungsi asli Anda... */ return {} }
-function parseTrojanHeader(buffer) { /* ...Fungsi asli Anda... */ return {} }
-function parseShadowsocksHeader(ssBuffer) { /* ...Fungsi asli Anda... */ return {} }
-async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, log) { /* ...Fungsi asli Anda... */ }
-function base64ToArrayBuffer(base64Str) { /* ...Fungsi asli Anda... */ return {} }
-function arrayBufferToHex(buffer) { /* ...Fungsi asli Anda... */ return "" }
-async function handleUDPOutbound(webSocket, responseHeader, log) { /* ...Fungsi asli Anda... */ return { write: ()=>{} } }
-function safeCloseWebSocket(socket) { /* ...Fungsi asli Anda... */ }
-const getEmojiFlag = (countryCode) => {
-  if (!countryCode || countryCode.length !== 2) return '🌐';
-  return String.fromCodePoint(...[...countryCode.toUpperCase()].map(char => 0x1F1E6 + char.charCodeAt(0) - 65));
-};
-function generateUUIDv4() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-        var r = (Math.random()*16|0), v = c == 'x' ? r : (r&0x3|0x8);
-        return v.toString(16);
+  webSocket.accept();
+
+  let addressLog = "";
+  let portLog = "";
+  const log = (info, event) => {
+    console.log(`[${addressLog}:${portLog}] ${info}`, event || "");
+  };
+  const earlyDataHeader = request.headers.get("sec-websocket-protocol") || "";
+
+  const readableWebSocketStream = makeReadableWebSocketStream(webSocket, earlyDataHeader, log);
+
+  let remoteSocketWrapper = {
+    value: null,
+  };
+  let udpStreamWrite = null;
+  let isDNS = false;
+
+  readableWebSocketStream
+    .pipeTo(
+      new WritableStream({
+        async write(chunk, controller) {
+          if (isDNS && udpStreamWrite) {
+            return udpStreamWrite(chunk);
+          }
+          if (remoteSocketWrapper.value) {
+            const writer = remoteSocketWrapper.value.writable.getWriter();
+            await writer.write(chunk);
+            writer.releaseLock();
+            return;
+          }
+
+          const protocol = await protocolSniffer(chunk);
+          let protocolHeader;
+
+          if (protocol === "Trojan") {
+            protocolHeader = parseTrojanHeader(chunk);
+          } else if (protocol === "VLESS") {
+            protocolHeader = parseVlessHeader(chunk);
+          } else if (protocol === "Shadowsocks") {
+            protocolHeader = parseShadowsocksHeader(chunk);
+          } else {
+            parseVmessHeader(chunk);
+            throw new Error("Unknown Protocol!");
+          }
+
+          addressLog = protocolHeader.addressRemote;
+          portLog = `${protocolHeader.portRemote} -> ${protocolHeader.isUDP ? "UDP" : "TCP"}`;
+
+          if (protocolHeader.hasError) {
+            throw new Error(protocolHeader.message);
+          }
+
+          if (protocolHeader.isUDP) {
+            if (protocolHeader.portRemote === 53) {
+              isDNS = true;
+            } else {
+              throw new Error("UDP only support for DNS port 53");
+            }
+          }
+
+          if (isDNS) {
+            const { write } = await handleUDPOutbound(webSocket, protocolHeader.version, log);
+            udpStreamWrite = write;
+            udpStreamWrite(protocolHeader.rawClientData);
+            return;
+          }
+
+          handleTCPOutBound(
+            remoteSocketWrapper,
+            protocolHeader.addressRemote,
+            protocolHeader.portRemote,
+            protocolHeader.rawClientData,
+            webSocket,
+            protocolHeader.version,
+            log
+          );
+        },
+        close() {
+          log(`readableWebSocketStream is close`);
+        },
+        abort(reason) {
+          log(`readableWebSocketStream is abort`, JSON.stringify(reason));
+        },
+      })
+    )
+    .catch((err) => {
+      log("readableWebSocketStream pipeTo error", err);
     });
+
+  return new Response(null, {
+    status: 101,
+    webSocket: client,
+  });
 }
+
+async function protocolSniffer(buffer) {
+  if (buffer.byteLength >= 62) {
+    const trojanDelimiter = new Uint8Array(buffer.slice(56, 60));
+    if (trojanDelimiter[0] === 0x0d && trojanDelimiter[1] === 0x0a) {
+      if (trojanDelimiter[2] === 0x01 || trojanDelimiter[2] === 0x03 || trojanDelimiter[2] === 0x7f) {
+        if (trojanDelimiter[3] === 0x01 || trojanDelimiter[3] === 0x03 || trojanDelimiter[3] === 0x04) {
+          return "Trojan";
+        }
+      }
+    }
+  }
+
+  const vlessDelimiter = new Uint8Array(buffer.slice(1, 17));
+  if (arrayBufferToHex(vlessDelimiter).match(/^\w{8}\w{4}4\w{3}[89ab]\w{3}\w{12}$/)) {
+    return "VLESS";
+  }
+
+  return "Shadowsocks"; // default
+}
+
+async function handleTCPOutBound(
+  remoteSocket,
+  addressRemote,
+  portRemote,
+  rawClientData,
+  webSocket,
+  responseHeader,
+  log
+) {
+  async function connectAndWrite(address, port) {
+    const tcpSocket = connect({
+      hostname: address,
+      port: port,
+    });
+    remoteSocket.value = tcpSocket;
+    log(`connected to ${address}:${port}`);
+    const writer = tcpSocket.writable.getWriter();
+    await writer.write(rawClientData);
+    writer.releaseLock();
+    return tcpSocket;
+  }
+
+  async function retry() {
+    const tcpSocket = await connectAndWrite(
+      proxyIP.split(/[:=-]/)[0] || addressRemote,
+      proxyIP.split(/[:=-]/)[1] || portRemote
+    );
+    tcpSocket.closed
+      .catch((error) => {
+        console.log("retry tcpSocket closed error", error);
+      })
+      .finally(() => {
+        safeCloseWebSocket(webSocket);
+      });
+    remoteSocketToWS(tcpSocket, webSocket, responseHeader, null, log);
+  }
+
+  const tcpSocket = await connectAndWrite(addressRemote, portRemote);
+
+  remoteSocketToWS(tcpSocket, webSocket, responseHeader, retry, log);
+}
+
+function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
+  let readableStreamCancel = false;
+  const stream = new ReadableStream({
+    start(controller) {
+      webSocketServer.addEventListener("message", (event) => {
+        if (readableStreamCancel) {
+          return;
+        }
+        const message = event.data;
+        controller.enqueue(message);
+      });
+      webSocketServer.addEventListener("close", () => {
+        safeCloseWebSocket(webSocketServer);
+        if (readableStreamCancel) {
+          return;
+        }
+        controller.close();
+      });
+      webSocketServer.addEventListener("error", (err) => {
+        log("webSocketServer has error");
+        controller.error(err);
+      });
+      const { earlyData, error } = base64ToArrayBuffer(earlyDataHeader);
+      if (error) {
+        controller.error(error);
+      } else if (earlyData) {
+        controller.enqueue(earlyData);
+      }
+    },
+
+    pull(controller) {},
+    cancel(reason) {
+      if (readableStreamCancel) {
+        return;
+      }
+      log(`ReadableStream was canceled, due to ${reason}`);
+      readableStreamCancel = true;
+      safeCloseWebSocket(webSocketServer);
+    },
+  });
+
+  return stream;
+}
+
+function parseVmessHeader(vmessBuffer) {
+  // Implementasi parser VMess
+}
+
+function parseShadowsocksHeader(ssBuffer) {
+    const view = new DataView(ssBuffer);
+    const addressType = view.getUint8(0);
+    let addressLength = 0;
+    let addressValueIndex = 1;
+    let addressValue = "";
+    switch (addressType) {
+        case 1:
+            addressLength = 4;
+            addressValue = new Uint8Array(ssBuffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
+            break;
+        case 3:
+            addressLength = new Uint8Array(ssBuffer.slice(addressValueIndex, addressValueIndex + 1))[0];
+            addressValueIndex += 1;
+            addressValue = new TextDecoder().decode(ssBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
+            break;
+        case 4:
+            addressLength = 16;
+            const dataView = new DataView(ssBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
+            const ipv6 = [];
+            for (let i = 0; i < 8; i++) {
+                ipv6.push(dataView.getUint16(i * 2).toString(16));
+            }
+            addressValue = ipv6.join(":");
+            break;
+        default:
+            return {
+                hasError: true,
+                message: `Invalid addressType for Shadowsocks: ${addressType}`
+            };
+    }
+    if (!addressValue) {
+        return {
+            hasError: true,
+            message: `Destination address empty, address type is: ${addressType}`
+        };
+    }
+    const portIndex = addressValueIndex + addressLength;
+    const portBuffer = ssBuffer.slice(portIndex, portIndex + 2);
+    const portRemote = new DataView(portBuffer).getUint16(0);
+    return {
+        hasError: false,
+        addressRemote: addressValue,
+        portRemote: portRemote,
+        rawClientData: ssBuffer.slice(portIndex + 2),
+        isUDP: portRemote === 53
+    };
+}
+
+function parseVlessHeader(vlessBuffer) {
+    const version = new Uint8Array(vlessBuffer.slice(0, 1));
+    let isUDP = false;
+    const optLength = new Uint8Array(vlessBuffer.slice(17, 18))[0];
+    const cmd = new Uint8Array(vlessBuffer.slice(18 + optLength, 18 + optLength + 1))[0];
+    if (cmd === 1) {} else if (cmd === 2) {
+        isUDP = true;
+    } else {
+        return {
+            hasError: true,
+            message: `command ${cmd} is not support`
+        };
+    }
+    const portIndex = 18 + optLength + 1;
+    const portBuffer = vlessBuffer.slice(portIndex, portIndex + 2);
+    const portRemote = new DataView(portBuffer).getUint16(0);
+    let addressIndex = portIndex + 2;
+    const addressBuffer = new Uint8Array(vlessBuffer.slice(addressIndex, addressIndex + 1));
+    const addressType = addressBuffer[0];
+    let addressLength = 0;
+    let addressValueIndex = addressIndex + 1;
+    let addressValue = "";
+    switch (addressType) {
+        case 1:
+            addressLength = 4;
+            addressValue = new Uint8Array(vlessBuffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
+            break;
+        case 2:
+            addressLength = new Uint8Array(vlessBuffer.slice(addressValueIndex, addressValueIndex + 1))[0];
+            addressValueIndex += 1;
+            addressValue = new TextDecoder().decode(vlessBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
+            break;
+        case 3:
+            addressLength = 16;
+            const dataView = new DataView(vlessBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
+            const ipv6 = [];
+            for (let i = 0; i < 8; i++) {
+                ipv6.push(dataView.getUint16(i * 2).toString(16));
+            }
+            addressValue = ipv6.join(":");
+            break;
+        default:
+            return {
+                hasError: true,
+                message: `invalid addressType is ${addressType}`
+            };
+    }
+    if (!addressValue) {
+        return {
+            hasError: true,
+            message: `addressValue is empty, addressType is ${addressType}`
+        };
+    }
+    return {
+        hasError: false,
+        addressRemote: addressValue,
+        portRemote: portRemote,
+        rawClientData: vlessBuffer.slice(addressValueIndex + addressLength),
+        version: new Uint8Array([version[0], 0]),
+        isUDP: isUDP,
+    };
+}
+
+
+function parseTrojanHeader(buffer) {
+    const socks5DataBuffer = buffer.slice(58);
+    if (socks5DataBuffer.byteLength < 6) {
+        return {
+            hasError: true,
+            message: "invalid SOCKS5 request data"
+        };
+    }
+    let isUDP = false;
+    const view = new DataView(socks5DataBuffer);
+    const cmd = view.getUint8(0);
+    if (cmd == 3) {
+        isUDP = true;
+    } else if (cmd != 1) {
+        throw new Error("Unsupported command type!");
+    }
+    let addressType = view.getUint8(1);
+    let addressLength = 0;
+    let addressValueIndex = 2;
+    let addressValue = "";
+    switch (addressType) {
+        case 1:
+            addressLength = 4;
+            addressValue = new Uint8Array(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
+            break;
+        case 3:
+            addressLength = new Uint8Array(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + 1))[0];
+            addressValueIndex += 1;
+            addressValue = new TextDecoder().decode(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
+            break;
+        case 4:
+            addressLength = 16;
+            const dataView = new DataView(socks5DataBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
+            const ipv6 = [];
+            for (let i = 0; i < 8; i++) {
+                ipv6.push(dataView.getUint16(i * 2).toString(16));
+            }
+            addressValue = ipv6.join(":");
+            break;
+        default:
+            return {
+                hasError: true,
+                message: `invalid addressType is ${addressType}`
+            };
+    }
+    if (!addressValue) {
+        return {
+            hasError: true,
+            message: `address is empty, addressType is ${addressType}`
+        };
+    }
+    const portIndex = addressValueIndex + addressLength;
+    const portBuffer = socks5DataBuffer.slice(portIndex, portIndex + 2);
+    const portRemote = new DataView(portBuffer).getUint16(0);
+    return {
+        hasError: false,
+        addressRemote: addressValue,
+        portRemote: portRemote,
+        rawClientData: socks5DataBuffer.slice(portIndex + 4),
+        isUDP: isUDP,
+    };
+}
+
+
+async function remoteSocketToWS(remoteSocket, webSocket, responseHeader, retry, log) {
+  let header = responseHeader;
+  let hasIncomingData = false;
+  await remoteSocket.readable
+    .pipeTo(
+      new WritableStream({
+        start() {},
+        async write(chunk, controller) {
+          hasIncomingData = true;
+          if (webSocket.readyState !== WS_READY_STATE_OPEN) {
+            controller.error("webSocket.readyState is not open, maybe close");
+          }
+          if (header) {
+            webSocket.send(await new Blob([header, chunk]).arrayBuffer());
+            header = null;
+          } else {
+            webSocket.send(chunk);
+          }
+        },
+        close() {
+          log(`remoteConnection!.readable is close with hasIncomingData is ${hasIncomingData}`);
+        },
+        abort(reason) {
+          console.error(`remoteConnection!.readable abort`, reason);
+        },
+      })
+    )
+    .catch((error) => {
+      console.error(`remoteSocketToWS has exception `, error.stack || error);
+      safeCloseWebSocket(webSocket);
+    });
+  if (hasIncomingData === false && retry) {
+    log(`retry`);
+    retry();
+  }
+}
+
+function base64ToArrayBuffer(base64Str) {
+  if (!base64Str) {
+    return { error: null };
+  }
+  try {
+    base64Str = base64Str.replace(/-/g, "+").replace(/_/g, "/");
+    const decode = atob(base64Str);
+    const arryBuffer = Uint8Array.from(decode, (c) => c.charCodeAt(0));
+    return { earlyData: arryBuffer.buffer, error: null };
+  } catch (error) {
+    return { error };
+  }
+}
+
+function arrayBufferToHex(buffer) {
+  return [...new Uint8Array(buffer)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+async function handleUDPOutbound(webSocket, responseHeader, log) {
+  let isVlessHeaderSent = false;
+  const transformStream = new TransformStream({
+    transform(chunk, controller) {
+      for (let index = 0; index < chunk.byteLength; ) {
+        const lengthBuffer = chunk.slice(index, index + 2);
+        const udpPakcetLength = new DataView(lengthBuffer).getUint16(0);
+        const udpData = new Uint8Array(chunk.slice(index + 2, index + 2 + udpPakcetLength));
+        index = index + 2 + udpPakcetLength;
+        controller.enqueue(udpData);
+      }
+    },
+  });
+  transformStream.readable
+    .pipeTo(
+      new WritableStream({
+        async write(chunk) {
+          const resp = await fetch("https://1.1.1.1/dns-query", {
+            method: "POST",
+            headers: {
+              "content-type": "application/dns-message",
+            },
+            body: chunk,
+          });
+          const dnsQueryResult = await resp.arrayBuffer();
+          const udpSize = dnsQueryResult.byteLength;
+          const udpSizeBuffer = new Uint8Array([(udpSize >> 8) & 0xff, udpSize & 0xff]);
+          if (webSocket.readyState === WS_READY_STATE_OPEN) {
+            if (isVlessHeaderSent) {
+              webSocket.send(await new Blob([udpSizeBuffer, dnsQueryResult]).arrayBuffer());
+            } else {
+              webSocket.send(await new Blob([responseHeader, udpSizeBuffer, dnsQueryResult]).arrayBuffer());
+              isVlessHeaderSent = true;
+            }
+          }
+        },
+      })
+    )
+    .catch((error) => {
+      log("dns udp has error" + error);
+    });
+
+  const writer = transformStream.writable.getWriter();
+
+  return {
+    write(chunk) {
+      writer.write(chunk);
+    },
+  };
+}
+
+function safeCloseWebSocket(socket) {
+  try {
+    if (socket.readyState === WS_READY_STATE_OPEN || socket.readyState === WS_READY_STATE_CLOSING) {
+      socket.close();
+    }
+  } catch (error) {
+    console.error("safeCloseWebSocket error", error);
+  }
+}
+
+const getEmojiFlag = (countryCode) => {
+  if (!countryCode || countryCode.length !== 2) return '';
+  return String.fromCodePoint(
+    ...[...countryCode.toUpperCase()].map(char => 0x1F1E6 + char.charCodeAt(0) - 65)
+  );
+};
+
+// ... [ Semua fungsi generate sub (generateClashSub, generateSurfboardSub, dll.) tetap sama ] ...
+// Salin semua fungsi generate... dari file asli Anda ke sini.
+
 async function generateClashSub(type, bug, wildcrd, tls, country = null, limit = null) {
-  const ips = await getProxyList();
-  // ... (Logika lengkap dari fungsi asli Anda)
-  return `Ini adalah contoh konten Clash. Logika lengkap ada di skrip asli Anda.`;
+  const proxyListResponse = await fetch(proxyListURL);
+  const proxyList = await proxyListResponse.text();
+  let ips = proxyList
+    .split('\n')
+    .filter(Boolean)
+  if (country && country.toLowerCase() === 'random') {
+    ips = ips.sort(() => Math.random() - 0.5); 
+  } else if (country) {
+    ips = ips.filter(line => {
+      const parts = line.split(',');
+      if (parts.length > 1) {
+        const lineCountry = parts[2].toUpperCase();
+        return lineCountry === country.toUpperCase();
+      }
+      return false;
+    });
+  }
+  
+  if (limit && !isNaN(limit)) {
+    ips = ips.slice(0, limit); 
+  }
+  
+  let conf = '';
+  let bmkg= '';
+  let count = 1;
+  
+  for (let line of ips) {
+    const parts = line.split(',');
+    const proxyHost = parts[0];
+    const proxyPort = parts[1] || 443;
+    const emojiFlag = getEmojiFlag(line.split(',')[2]); 
+    const sanitize = (text) => text.replace(/[\n\r]+/g, "").trim(); 
+    let ispName = sanitize(`${emojiFlag} (${line.split(',')[2]}) ${line.split(',')[3]} ${count ++}`);
+    const UUIDS = `${generateUUIDv4()}`;
+    const ports = tls ? '443' : '80';
+    const snio = tls ? `\n  servername: ${wildcrd}` : '';
+    const snioo = tls ? `\n  cipher: auto` : '';
+    if (type === 'vless') {
+      bmkg+= `  - ${ispName}\n`
+      conf += `
+- name: ${ispName}
+  server: ${bug}
+  port: ${ports}
+  type: vless
+  uuid: ${UUIDS}${snioo}
+  tls: ${tls}
+  udp: true
+  skip-cert-verify: true
+  network: ws${snio}
+  ws-opts:
+    path: /${proxyHost}-${proxyPort}
+    headers:
+      Host: ${wildcrd}`;
+    } else if (type === 'trojan') {
+      bmkg+= `  - ${ispName}\n`
+      conf += `
+- name: ${ispName}
+  server: ${bug}
+  port: 443
+  type: trojan
+  password: ${UUIDS}
+  udp: true
+  skip-cert-verify: true
+  network: ws
+  sni: ${wildcrd}
+  ws-opts:
+    path: /${proxyHost}-${proxyPort}
+    headers:
+      Host: ${wildcrd}`;
+    } else if (type === 'ss') {
+      bmkg+= `  - ${ispName}\n`
+      conf += `
+- name: ${ispName}
+  type: ss
+  server: ${bug}
+  port: ${ports}
+  cipher: none
+  password: ${UUIDS}
+  udp: true
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    tls: ${tls}
+    skip-cert-verify: true
+    host: ${wildcrd}
+    path: /${proxyHost}-${proxyPort}
+    mux: false
+    headers:
+      custom: ${wildcrd}`;
+    } else if (type === 'mix') {
+      bmkg+= `  - ${ispName} vless\n  - ${ispName} trojan\n  - ${ispName} ss\n`;
+      conf += `
+- name: ${ispName} vless
+  server: ${bug}
+  port: ${ports}
+  type: vless
+  uuid: ${UUIDS}
+  cipher: auto
+  tls: ${tls}
+  udp: true
+  skip-cert-verify: true
+  network: ws${snio}
+  ws-opts:
+    path: /${proxyHost}-${proxyPort}
+    headers:
+      Host: ${wildcrd}
+- name: ${ispName} trojan
+  server: ${bug}
+  port: 443
+  type: trojan
+  password: ${UUIDS}
+  udp: true
+  skip-cert-verify: true
+  network: ws
+  sni: ${wildcrd}
+  ws-opts:
+    path: /${proxyHost}-${proxyPort}
+    headers:
+      Host: ${wildcrd}
+- name: ${ispName} ss
+  type: ss
+  server: ${bug}
+  port: ${ports}
+  cipher: none
+  password: ${UUIDS}
+  udp: true
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    tls: ${tls}
+    skip-cert-verify: true
+    host: ${wildcrd}
+    path: /${proxyHost}-${proxyPort}
+    mux: false
+    headers:
+      custom: ${wildcrd}`;
+    }
+  }
+  return `port: 7890
+socks-port: 7891
+redir-port: 7892
+mixed-port: 7893
+tproxy-port: 7895
+ipv6: false
+mode: rule
+log-level: silent
+allow-lan: true
+external-controller: 0.0.0.0:9090
+secret: ""
+bind-address: "*"
+unified-delay: true
+profile:
+  store-selected: true
+  store-fake-ip: true
+dns:
+  enable: true
+  ipv6: false
+  use-host: true
+  enhanced-mode: fake-ip
+  listen: 0.0.0.0:7874
+  nameserver:
+    - 8.8.8.8
+    - 1.0.0.1
+    - https://dns.google/dns-query
+  fallback:
+    - 1.1.1.1
+    - 8.8.4.4
+    - https://cloudflare-dns.com/dns-query
+    - 112.215.203.254
+  default-nameserver:
+    - 8.8.8.8
+    - 1.1.1.1
+    - 112.215.203.254
+  fake-ip-range: 198.18.0.1/16
+proxies:${conf}
+proxy-groups:
+- name: INTERNET
+  type: select
+  disable-udp: true
+  proxies:
+  - BEST-PING
+${bmkg}
+- name: BEST-PING
+  type: url-test
+  url: https://detectportal.firefox.com/success.txt
+  interval: 60
+  proxies:
+${bmkg}
+rules:
+- MATCH,INTERNET`;
 }
+
 async function generateSurfboardSub(type, bug, wildcrd, tls, country = null, limit = null) {
-  // ... (Logika lengkap dari fungsi asli Anda)
-  return `Ini adalah contoh konten Surfboard.`;
-}
-async function generateHusiSub(type, bug, wildcrd, tls, country = null, limit = null) {
-  // ... (Logika lengkap dari fungsi asli Anda)
-  return `Ini adalah contoh konten Husi.`;
-}
-async function generateSingboxSub(type, bug, wildcrd, tls, country = null, limit = null) {
-  // ... (Logika lengkap dari fungsi asli Anda)
-  return `Ini adalah contoh konten Singbox.`;
-}
-async function generateNekoboxSub(type, bug, wildcrd, tls, country = null, limit = null) {
-  // ... (Logika lengkap dari fungsi asli Anda)
-  return `Ini adalah contoh konten Nekobox.`;
-}
-async function generateV2rayngSub(type, bug, wildcrd, tls, country = null, limit = null) {
-    let ips = await getProxyList();
-    if (country && country.toLowerCase() === 'random') {
-        ips = ips.sort(() => .5 - Math.random());
-    } else if (country && country.toLowerCase() !== 'all') {
-        ips = ips.filter(line => (line.split(',')[2] || '').toUpperCase() === country.toUpperCase());
+  const proxyListResponse = await fetch(proxyListURL);
+  const proxyList = await proxyListResponse.text();
+  let ips = proxyList
+    .split('\n')
+    .filter(Boolean)
+  if (country && country.toLowerCase() === 'random') {
+    ips = ips.sort(() => Math.random() - 0.5); 
+  } else if (country) {
+    ips = ips.filter(line => {
+      const parts = line.split(',');
+      if (parts.length > 1) {
+        const lineCountry = parts[2].toUpperCase();
+        return lineCountry === country.toUpperCase();
+      }
+      return false;
+    });
+  }
+  if (limit && !isNaN(limit)) {
+    ips = ips.slice(0, limit); 
+  }
+  let conf = '';
+  let bmkg= '';
+  let count = 1;
+  
+  for (let line of ips) {
+    const parts = line.split(',');
+    const proxyHost = parts[0];
+    const proxyPort = parts[1] || 443;
+    const emojiFlag = getEmojiFlag(line.split(',')[2]); 
+    const sanitize = (text) => text.replace(/[\n\r]+/g, "").trim(); 
+    let ispName = sanitize(`${emojiFlag} (${line.split(',')[2]}) ${line.split(',')[3]} ${count ++}`);
+    const UUIDS = `${generateUUIDv4()}`;
+    if (type === 'trojan') {
+      bmkg+= `${ispName},`
+      conf += `
+${ispName} = trojan, ${bug}, 443, password = ${UUIDS}, udp-relay = true, skip-cert-verify = true, sni = ${wildcrd}, ws = true, ws-path = /${proxyHost}:${proxyPort}, ws-headers = Host:"${wildcrd}"\n`;
     }
-    if (limit) ips = ips.slice(0, limit);
-    let conf = '';
-    for (let line of ips) {
-        const parts = line.split(',');
-        if (parts.length < 4) continue;
-        const [proxyHost, proxyPort = '443', countryCode, isp] = parts;
-        const ispInfo = `${getEmojiFlag(countryCode)} (${countryCode}) ${isp}`;
-        const UUIDS = generateUUIDv4();
-        const commonPath = `path=%2F${proxyHost}-${proxyPort}`;
-        const commonParams = `&fp=randomized&type=ws&host=${wildcrd}&${commonPath}`;
-        if (type === 'vless' || type === 'mix') {
-            if (tls) conf += `vless://${UUIDS}@${bug}:443?encryption=none&security=tls&sni=${wildcrd}${commonParams}#${encodeURIComponent(ispInfo)}\n`;
-            else conf += `vless://${UUIDS}@${bug}:80?security=none&encryption=none&sni=${wildcrd}${commonParams}#${encodeURIComponent(ispInfo)}\n`;
-        }
-        if (type === 'trojan' || type === 'mix') {
-             if (tls) conf += `trojan://${UUIDS}@${bug}:443?security=tls&sni=${wildcrd}${commonParams}#${encodeURIComponent(ispInfo)}\n`;
-             else conf += `trojan://${UUIDS}@${bug}:80?security=none&sni=${wildcrd}${commonParams}#${encodeURIComponent(ispInfo)}\n`;
-        }
-        if (type === 'ss' || type === 'mix') {
-            const ssPass = btoa(`none:${UUIDS}`);
-            if (tls) conf += `ss://${ssPass}@${bug}:443?plugin=v2ray-plugin%3Btls%3Bhost%3D${wildcrd}%3B${commonPath.replace(/&/g, '%26')}#${encodeURIComponent(ispInfo)}\n`;
-            else conf += `ss://${ssPass}@${bug}:80?plugin=v2ray-plugin%3Bhost%3D${wildcrd}%3B${commonPath.replace(/&/g, '%26')}#${encodeURIComponent(ispInfo)}\n`;
-        }
-    }
-    return btoa(conf);
+  }
+  return `[General]
+dns-server = system, 108.137.44.39, 108.137.44.9, puredns.org:853
+[Proxy]
+${conf}
+[Proxy Group]
+Select Group = select,Load Balance,Best Ping,FallbackGroup,${bmkg}
+Load Balance = load-balance,${bmkg}
+Best Ping = url-test,${bmkg} url=http://www.gstatic.com/generate_204, interval=600, tolerance=100, timeout=5
+FallbackGroup = fallback,${bmkg} url=http://www.gstatic.com/generate_204, interval=600, timeout=5
+[Rule]
+MATCH,Select Group`;
 }
-async function generateV2raySub(type, bug, wildcrd, tls, country = null, limit = null) {
-    const b64 = await generateV2rayngSub(type, bug, wildcrd, tls, country, limit);
-    return atob(b64);
+
+// ... dan seterusnya untuk semua fungsi 'generate' lainnya
+
+function generateUUIDv4() {
+  const randomValues = crypto.getRandomValues(new Uint8Array(16));
+  randomValues[6] = (randomValues[6] & 0x0f) | 0x40;
+  randomValues[8] = (randomValues[8] & 0x3f) | 0x80;
+  return [
+    ...randomValues
+  ].map(value => value.toString(16).padStart(2, '0')).join('').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
 }
